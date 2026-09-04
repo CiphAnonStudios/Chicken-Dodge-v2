@@ -1,0 +1,1318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chicken Dodging Fox</title>
+
+<style>
+* {
+    box-sizing: border-box;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #111;
+    font-family: Arial, sans-serif;
+}
+
+canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+}
+
+#ui {
+    position: fixed;
+    top: 15px;
+    left: 15px;
+    z-index: 5;
+    color: white;
+    font-weight: bold;
+    font-size: 18px;
+    text-shadow: 2px 2px #000;
+    pointer-events: none;
+}
+
+#dashBar {
+    margin-top: 7px;
+    width: 150px;
+    height: 12px;
+    border: 2px solid white;
+    background: #222;
+}
+
+#dashFill {
+    width: 100%;
+    height: 100%;
+    background: #6ee7ff;
+}
+
+#message {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    color: white;
+    background: rgba(0,0,0,.55);
+    z-index: 20;
+    text-align: center;
+}
+
+#message h1 {
+    margin: 0 0 10px;
+    font-size: 48px;
+}
+
+#message p {
+    font-size: 20px;
+}
+
+button {
+    padding: 14px 25px;
+    border: 0;
+    border-radius: 10px;
+    background: white;
+    color: #111;
+    font-size: 18px;
+    font-weight: bold;
+}
+
+#mobileControls {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    right: 20px;
+    display: flex;
+    justify-content: space-between;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.control {
+    width: 85px;
+    height: 85px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,.5);
+    background: rgba(255,255,255,.15);
+    color: white;
+    font-size: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+#moveButtons {
+    display: grid;
+    grid-template-columns: repeat(3, 55px);
+    grid-template-rows: repeat(2, 55px);
+    gap: 5px;
+}
+
+.move {
+    width: 55px;
+    height: 55px;
+}
+
+.empty {
+    visibility: hidden;
+}
+
+@media (min-width: 800px) {
+    #mobileControls {
+        opacity: .35;
+    }
+}
+</style>
+</head>
+
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="ui">
+    Score: <span id="score">0</span><br>
+    Eggs: <span id="eggs">0</span><br>
+    Foxes: <span id="foxCount">1</span><br>
+    Time: <span id="time">0</span>s
+
+    <div id="dashBar">
+        <div id="dashFill"></div>
+    </div>
+</div>
+
+<div id="message">
+    <h1>CAUGHT! 🦊</h1>
+    <p id="finalScore"></p>
+    <button onclick="restartGame()">PLAY AGAIN</button>
+</div>
+
+<div id="mobileControls">
+    <div id="moveButtons">
+        <div class="control empty"></div>
+        <div class="control move" data-key="up">▲</div>
+        <div class="control empty"></div>
+
+        <div class="control move" data-key="left">◀</div>
+        <div class="control move" data-key="down">▼</div>
+        <div class="control move" data-key="right">▶</div>
+    </div>
+
+    <div class="control" id="dashButton">💨</div>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let W, H;
+
+function resize() {
+    W = canvas.width = innerWidth;
+    H = canvas.height = innerHeight;
+}
+
+addEventListener("resize", resize);
+resize();
+
+
+// =========================
+// INPUT
+// =========================
+
+const keys = {};
+
+addEventListener("keydown", e => {
+    keys[e.key.toLowerCase()] = true;
+
+    if (
+        ["arrowup","arrowdown","arrowleft","arrowright"," "].includes(
+            e.key.toLowerCase()
+        )
+    ) {
+        e.preventDefault();
+    }
+
+    if (e.key === " ") dash();
+});
+
+addEventListener("keyup", e => {
+    keys[e.key.toLowerCase()] = false;
+});
+
+document.querySelectorAll(".move").forEach(btn => {
+    const key = btn.dataset.key;
+
+    const down = e => {
+        e.preventDefault();
+        keys[key] = true;
+    };
+
+    const up = e => {
+        e.preventDefault();
+        keys[key] = false;
+    };
+
+    btn.addEventListener("pointerdown", down);
+    btn.addEventListener("pointerup", up);
+    btn.addEventListener("pointercancel", up);
+    btn.addEventListener("pointerleave", up);
+});
+
+document.getElementById("dashButton").addEventListener("pointerdown", e => {
+    e.preventDefault();
+    dash();
+});
+
+
+// =========================
+// GAME STATE
+// =========================
+
+let running = true;
+let score = 0;
+let eggCount = 0;
+let startTime = performance.now();
+
+let lastTime = performance.now();
+
+const chicken = {
+    x: W / 2,
+    y: H / 2,
+    vx: 0,
+    vy: 0,
+    radius: 17,
+
+    speed: 320,
+    acceleration: 1800,
+
+    dashPower: 850,
+    dashCooldown: 0,
+
+    angle: 0,
+
+    jukeCombo: 0,
+    comboTimer: 0
+};
+
+let foxes = [];
+let particles = [];
+let eggs = [];
+let obstacles = [];
+
+
+// =========================
+// HELPERS
+// =========================
+
+function distance(a,b) {
+    return Math.hypot(a.x-b.x, a.y-b.y);
+}
+
+function clamp(v,min,max) {
+    return Math.max(min, Math.min(max,v));
+}
+
+function random(min,max) {
+    return Math.random() * (max-min) + min;
+}
+
+function circleCollision(a,b) {
+    return distance(a,b) < a.radius + b.radius;
+}
+
+
+// =========================
+// OBSTACLES
+// =========================
+
+function createObstacles() {
+    obstacles = [];
+
+    for (let i = 0; i < 14; i++) {
+
+        let o = {
+            x: random(70, W-120),
+            y: random(100, H-140),
+            w: random(55,110),
+            h: random(45,85)
+        };
+
+        if (
+            Math.abs(o.x - chicken.x) < 180 &&
+            Math.abs(o.y - chicken.y) < 180
+        ) {
+            i--;
+            continue;
+        }
+
+        obstacles.push(o);
+    }
+}
+
+function drawObstacles() {
+    for (const o of obstacles) {
+
+        ctx.fillStyle = "#8a5a32";
+        ctx.fillRect(o.x,o.y,o.w,o.h);
+
+        ctx.strokeStyle = "#51341d";
+        ctx.lineWidth = 4;
+        ctx.strokeRect(o.x,o.y,o.w,o.h);
+
+        // wooden planks
+        ctx.strokeStyle = "#704622";
+        ctx.lineWidth = 2;
+
+        for (let x=o.x+12; x<o.x+o.w; x+=20) {
+            ctx.beginPath();
+            ctx.moveTo(x,o.y);
+            ctx.lineTo(x,o.y+o.h);
+            ctx.stroke();
+        }
+    }
+}
+
+
+// =========================
+// FOXES
+// =========================
+
+function spawnFox() {
+
+    let side = Math.floor(random(0,4));
+
+    let x,y;
+
+    if (side === 0) {
+        x = -50;
+        y = random(0,H);
+    }
+
+    if (side === 1) {
+        x = W+50;
+        y = random(0,H);
+    }
+
+    if (side === 2) {
+        x = random(0,W);
+        y = -50;
+    }
+
+    if (side === 3) {
+        x = random(0,W);
+        y = H+50;
+    }
+
+    foxes.push({
+        x,
+        y,
+
+        vx: 0,
+        vy: 0,
+
+        radius: 19,
+
+        speed: random(125,165),
+
+        targetAngle: 0,
+
+        hitCooldown: 0,
+
+        dead: false,
+
+        wiggle: random(0,Math.PI*2)
+    });
+}
+
+function updateFox(f,dt,index) {
+
+    f.hitCooldown -= dt;
+    f.wiggle += dt * 3;
+
+    const dx = chicken.x - f.x;
+    const dy = chicken.y - f.y;
+
+    const d = Math.hypot(dx,dy);
+
+    // Predict where the chicken will be.
+    const prediction = clamp(d / 300, .1, .65);
+
+    let tx = chicken.x + chicken.vx * prediction;
+    let ty = chicken.y + chicken.vy * prediction;
+
+    let angle = Math.atan2(ty-f.y,tx-f.x);
+
+    // Slight separation from other foxes.
+    for (let i=0;i<foxes.length;i++) {
+
+        if (i === index) continue;
+
+        const other = foxes[i];
+
+        const ox = f.x-other.x;
+        const oy = f.y-other.y;
+
+        const od = Math.hypot(ox,oy);
+
+        if (od < 80 && od > 0) {
+            angle += Math.atan2(oy,ox) * 0.08;
+        }
+    }
+
+    f.targetAngle = angle;
+
+    const desiredVX = Math.cos(angle) * f.speed;
+    const desiredVY = Math.sin(angle) * f.speed;
+
+    f.vx += (desiredVX-f.vx) * dt * 2.2;
+    f.vy += (desiredVY-f.vy) * dt * 2.2;
+
+    f.x += f.vx * dt;
+    f.y += f.vy * dt;
+
+    // Small bounce from obstacles.
+    for (const o of obstacles) {
+
+        if (
+            f.x+f.radius > o.x &&
+            f.x-f.radius < o.x+o.w &&
+            f.y+f.radius > o.y &&
+            f.y-f.radius < o.y+o.h
+        ) {
+
+            const centerX = o.x+o.w/2;
+            const centerY = o.y+o.h/2;
+
+            const a = Math.atan2(f.y-centerY,f.x-centerX);
+
+            f.x += Math.cos(a)*5;
+            f.y += Math.sin(a)*5;
+
+            f.vx *= .85;
+            f.vy *= .85;
+        }
+    }
+
+    // Keep foxes on screen after entering.
+    if (f.x > -80 && f.x < W+80) {
+        f.x = clamp(f.x,-80,W+80);
+    }
+
+    if (f.y > -80 && f.y < H+80) {
+        f.y = clamp(f.y,-80,H+80);
+    }
+}
+
+
+// =========================
+// FOX COLLISIONS
+// =========================
+
+function foxVsFox() {
+
+    for (let i=0;i<foxes.length;i++) {
+
+        for (let j=i+1;j<foxes.length;j++) {
+
+            const a = foxes[i];
+            const b = foxes[j];
+
+            if (a.dead || b.dead) continue;
+
+            if (distance(a,b) < a.radius+b.radius) {
+
+                a.dead = true;
+                b.dead = true;
+
+                score += 500;
+
+                createExplosion(
+                    (a.x+b.x)/2,
+                    (a.y+b.y)/2,
+                    24
+                );
+
+                createText(
+                    (a.x+b.x)/2,
+                    (a.y+b.y)/2,
+                    "DOUBLE JUKE! +500"
+                );
+            }
+        }
+    }
+
+    foxes = foxes.filter(f => !f.dead);
+}
+
+
+// =========================
+// CHICKEN
+// =========================
+
+function getInput() {
+
+    let x = 0;
+    let y = 0;
+
+    if (keys["arrowleft"] || keys["a"] || keys["left"]) x--;
+    if (keys["arrowright"] || keys["d"] || keys["right"]) x++;
+    if (keys["arrowup"] || keys["w"] || keys["up"]) y--;
+    if (keys["arrowdown"] || keys["s"] || keys["down"]) y++;
+
+    if (x || y) {
+
+        const len = Math.hypot(x,y);
+
+        x /= len;
+        y /= len;
+    }
+
+    return {x,y};
+}
+
+function updateChicken(dt) {
+
+    const input = getInput();
+
+    const targetVX = input.x * chicken.speed;
+    const targetVY = input.y * chicken.speed;
+
+    chicken.vx += (targetVX-chicken.vx) *
+        Math.min(1, chicken.acceleration*dt/chicken.speed);
+
+    chicken.vy += (targetVY-chicken.vy) *
+        Math.min(1, chicken.acceleration*dt/chicken.speed);
+
+    // Friction
+    if (!input.x && !input.y) {
+        chicken.vx *= Math.pow(.02,dt);
+        chicken.vy *= Math.pow(.02,dt);
+    }
+
+    const oldX = chicken.x;
+    const oldY = chicken.y;
+
+    chicken.x += chicken.vx * dt;
+    chicken.y += chicken.vy * dt;
+
+    // World boundaries
+    chicken.x = clamp(
+        chicken.x,
+        chicken.radius,
+        W-chicken.radius
+    );
+
+    chicken.y = clamp(
+        chicken.y,
+        chicken.radius,
+        H-chicken.radius
+    );
+
+    // Obstacle collision
+    for (const o of obstacles) {
+
+        if (
+            chicken.x+chicken.radius > o.x &&
+            chicken.x-chicken.radius < o.x+o.w &&
+            chicken.y+chicken.radius > o.y &&
+            chicken.y-chicken.radius < o.y+o.h
+        ) {
+
+            // Push chicken back out.
+            chicken.x = oldX;
+            chicken.y = oldY;
+
+            chicken.vx *= -.35;
+            chicken.vy *= -.35;
+        }
+    }
+
+    const speed = Math.hypot(chicken.vx,chicken.vy);
+
+    if (speed > 30) {
+        chicken.angle = Math.atan2(chicken.vy,chicken.vx);
+    }
+
+    chicken.dashCooldown -= dt;
+
+    chicken.comboTimer -= dt;
+
+    if (chicken.comboTimer <= 0) {
+        chicken.jukeCombo = 0;
+    }
+
+    // Dust trail
+    if (speed > 100) {
+
+        createDust(
+            chicken.x - chicken.vx*.025,
+            chicken.y - chicken.vy*.025,
+            speed > 400 ? 2 : 1
+        );
+    }
+}
+
+
+// =========================
+// DASH
+// =========================
+
+function dash() {
+
+    if (!running) return;
+    if (chicken.dashCooldown > 0) return;
+
+    let input = getInput();
+
+    let x = input.x;
+    let y = input.y;
+
+    if (!x && !y) {
+
+        x = Math.cos(chicken.angle);
+        y = Math.sin(chicken.angle);
+
+        if (!x && !y) x = 1;
+    }
+
+    chicken.vx = x * chicken.dashPower;
+    chicken.vy = y * chicken.dashPower;
+
+    chicken.dashCooldown = 1.2;
+
+    createDust(chicken.x,chicken.y,12);
+}
+
+
+// =========================
+// EGGS
+// =========================
+
+function spawnEgg() {
+
+    let e;
+
+    do {
+
+        e = {
+            x: random(40,W-40),
+            y: random(70,H-40),
+            radius: 10
+        };
+
+    } while (
+        obstacles.some(o =>
+            e.x > o.x-20 &&
+            e.x < o.x+o.w+20 &&
+            e.y > o.y-20 &&
+            e.y < o.y+o.h+20
+        )
+    );
+
+    eggs.push(e);
+}
+
+function updateEggs() {
+
+    for (let i=eggs.length-1;i>=0;i--) {
+
+        if (circleCollision(chicken,eggs[i])) {
+
+            score += 100;
+            eggCount++;
+
+            createText(
+                eggs[i].x,
+                eggs[i].y,
+                "+100"
+            );
+
+            createExplosion(
+                eggs[i].x,
+                eggs[i].y,
+                8
+            );
+
+            eggs.splice(i,1);
+            spawnEgg();
+        }
+    }
+}
+
+
+// =========================
+// JUKE DETECTION
+// =========================
+
+let previousChickenAngle = 0;
+
+function detectJukes() {
+
+    const speed = Math.hypot(chicken.vx,chicken.vy);
+
+    if (speed < 150) return;
+
+    const currentAngle = Math.atan2(
+        chicken.vy,
+        chicken.vx
+    );
+
+    let diff = currentAngle - previousChickenAngle;
+
+    while (diff > Math.PI) diff -= Math.PI*2;
+    while (diff < -Math.PI) diff += Math.PI*2;
+
+    if (Math.abs(diff) > 1.15) {
+
+        for (const f of foxes) {
+
+            const d = distance(chicken,f);
+
+            if (d < 180) {
+
+                chicken.jukeCombo++;
+                chicken.comboTimer = 2;
+
+                const points =
+                    100 * chicken.jukeCombo;
+
+                score += points;
+
+                createText(
+                    chicken.x,
+                    chicken.y-30,
+                    "JUKE! +" + points
+                );
+
+                createDust(
+                    chicken.x,
+                    chicken.y,
+                    7
+                );
+
+                break;
+            }
+        }
+    }
+
+    previousChickenAngle = currentAngle;
+}
+
+
+// =========================
+// PARTICLES
+// =========================
+
+function createDust(x,y,count=1) {
+
+    for (let i=0;i<count;i++) {
+
+        particles.push({
+            type:"dust",
+
+            x:x+random(-7,7),
+            y:y+random(-7,7),
+
+            vx:random(-25,25),
+            vy:random(-25,25),
+
+            life:random(.25,.5),
+            maxLife:.5,
+
+            size:random(5,11)
+        });
+    }
+}
+
+function createExplosion(x,y,count) {
+
+    for (let i=0;i<count;i++) {
+
+        const a = random(0,Math.PI*2);
+        const s = random(50,180);
+
+        particles.push({
+            type:"impact",
+
+            x,
+            y,
+
+            vx:Math.cos(a)*s,
+            vy:Math.sin(a)*s,
+
+            life:random(.3,.7),
+            maxLife:.7,
+
+            size:random(3,8)
+        });
+    }
+}
+
+function createText(x,y,text) {
+
+    particles.push({
+        type:"text",
+
+        x,
+        y,
+
+        vx:0,
+        vy:-35,
+
+        life:1,
+        maxLife:1,
+
+        text
+    });
+}
+
+function updateParticles(dt) {
+
+    for (let i=particles.length-1;i>=0;i--) {
+
+        const p = particles[i];
+
+        p.life -= dt;
+
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+
+        if (p.type === "dust") {
+            p.size += dt*12;
+        }
+
+        if (p.type === "impact") {
+            p.vx *= .95;
+            p.vy *= .95;
+        }
+
+        if (p.life <= 0) {
+            particles.splice(i,1);
+        }
+    }
+}
+
+
+// =========================
+// DRAW
+// =========================
+
+function drawBackground() {
+
+    ctx.fillStyle = "#76b852";
+    ctx.fillRect(0,0,W,H);
+
+    // Grass stripes
+    ctx.strokeStyle = "rgba(30,100,30,.15)";
+    ctx.lineWidth = 2;
+
+    for (let x=0;x<W;x+=30) {
+
+        ctx.beginPath();
+        ctx.moveTo(x,0);
+        ctx.lineTo(x,H);
+        ctx.stroke();
+    }
+
+    // Dirt patches
+    for (let i=0;i<30;i++) {
+
+        const x = (i*137)%W;
+        const y = (i*83)%H;
+
+        ctx.fillStyle = "rgba(90,60,25,.12)";
+        ctx.beginPath();
+        ctx.arc(x,y,random(4,13),0,Math.PI*2);
+        ctx.fill();
+    }
+}
+
+function drawEggs() {
+
+    for (const e of eggs) {
+
+        ctx.save();
+
+        ctx.translate(e.x,e.y);
+
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+
+        ctx.ellipse(
+            0,
+            0,
+            8,
+            11,
+            0,
+            0,
+            Math.PI*2
+        );
+
+        ctx.fill();
+
+        ctx.restore();
+    }
+}
+
+function drawChicken() {
+
+    ctx.save();
+
+    ctx.translate(chicken.x,chicken.y);
+
+    ctx.rotate(chicken.angle);
+
+    // Body
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(0,0,17,0,Math.PI*2);
+    ctx.fill();
+
+    // Wing
+    ctx.fillStyle = "#ddd";
+
+    ctx.beginPath();
+    ctx.ellipse(
+        -2,
+        5,
+        10,
+        6,
+        0,
+        0,
+        Math.PI*2
+    );
+
+    ctx.fill();
+
+    // Head
+    ctx.fillStyle = "#fff";
+    ctx.beginPath();
+    ctx.arc(13,-7,11,0,Math.PI*2);
+    ctx.fill();
+
+    // Beak
+    ctx.fillStyle = "#f2a900";
+
+    ctx.beginPath();
+    ctx.moveTo(22,-7);
+    ctx.lineTo(31,-3);
+    ctx.lineTo(22,-1);
+    ctx.closePath();
+    ctx.fill();
+
+    // Eye
+    ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.arc(16,-10,2.5,0,Math.PI*2);
+    ctx.fill();
+
+    // Comb
+    ctx.fillStyle = "#e63946";
+
+    ctx.beginPath();
+    ctx.arc(11,-17,4,0,Math.PI*2);
+    ctx.arc(16,-19,4,0,Math.PI*2);
+    ctx.arc(21,-16,4,0,Math.PI*2);
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawFox(f) {
+
+    ctx.save();
+
+    ctx.translate(f.x,f.y);
+
+    const angle = Math.atan2(f.vy,f.vx);
+
+    ctx.rotate(angle);
+
+    // Body
+    ctx.fillStyle = "#e87528";
+
+    ctx.beginPath();
+    ctx.ellipse(0,0,20,14,0,0,Math.PI*2);
+    ctx.fill();
+
+    // Head
+    ctx.beginPath();
+    ctx.arc(17,-2,13,0,Math.PI*2);
+    ctx.fill();
+
+    // Ears
+    ctx.beginPath();
+    ctx.moveTo(10,-11);
+    ctx.lineTo(11,-25);
+    ctx.lineTo(19,-13);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(22,-12);
+    ctx.lineTo(29,-24);
+    ctx.lineTo(30,-6);
+    ctx.fill();
+
+    // White face
+    ctx.fillStyle = "#fff";
+
+    ctx.beginPath();
+    ctx.arc(22,2,7,0,Math.PI*2);
+    ctx.fill();
+
+    // Nose
+    ctx.fillStyle = "#222";
+
+    ctx.beginPath();
+    ctx.arc(29,2,3,0,Math.PI*2);
+    ctx.fill();
+
+    // Eye
+    ctx.beginPath();
+    ctx.arc(22,-5,2,0,Math.PI*2);
+    ctx.fill();
+
+    // Tail
+    ctx.fillStyle = "#e87528";
+
+    ctx.beginPath();
+    ctx.moveTo(-14,0);
+    ctx.quadraticCurveTo(
+        -35,-22,
+        -38,2
+    );
+    ctx.quadraticCurveTo(
+        -25,16,
+        -10,10
+    );
+    ctx.fill();
+
+    ctx.restore();
+}
+
+function drawParticles() {
+
+    for (const p of particles) {
+
+        const alpha =
+            clamp(p.life/p.maxLife,0,1);
+
+        ctx.globalAlpha = alpha;
+
+        if (p.type === "dust") {
+
+            ctx.fillStyle = "#d5c49b";
+
+            ctx.beginPath();
+            ctx.arc(
+                p.x,
+                p.y,
+                p.size,
+                0,
+                Math.PI*2
+            );
+
+            ctx.fill();
+        }
+
+        if (p.type === "impact") {
+
+            ctx.fillStyle = "#ffd166";
+
+            ctx.beginPath();
+            ctx.arc(
+                p.x,
+                p.y,
+                p.size,
+                0,
+                Math.PI*2
+            );
+
+            ctx.fill();
+        }
+
+        if (p.type === "text") {
+
+            ctx.font = "bold 20px Arial";
+            ctx.textAlign = "center";
+
+            ctx.fillStyle = "#fff";
+
+            ctx.strokeStyle = "#000";
+            ctx.lineWidth = 4;
+
+            ctx.strokeText(
+                p.text,
+                p.x,
+                p.y
+            );
+
+            ctx.fillText(
+                p.text,
+                p.x,
+                p.y
+            );
+        }
+
+        ctx.globalAlpha = 1;
+    }
+}
+
+
+// =========================
+// GAME OVER
+// =========================
+
+function gameOver() {
+
+    running = false;
+
+    document.getElementById("message").style.display =
+        "flex";
+
+    document.getElementById("finalScore").textContent =
+        `Score: ${score} • Eggs: ${eggCount}`;
+}
+
+function restartGame() {
+
+    score = 0;
+    eggCount = 0;
+
+    chicken.x = W/2;
+    chicken.y = H/2;
+    chicken.vx = 0;
+    chicken.vy = 0;
+    chicken.angle = 0;
+    chicken.dashCooldown = 0;
+    chicken.jukeCombo = 0;
+
+    foxes = [];
+    particles = [];
+    eggs = [];
+
+    createObstacles();
+
+    spawnFox();
+
+    for (let i=0;i<3;i++) spawnEgg();
+
+    startTime = performance.now();
+
+    running = true;
+
+    document.getElementById("message").style.display =
+        "none";
+}
+
+
+// =========================
+// DIFFICULTY
+// =========================
+
+let nextFoxTime = 8;
+
+function updateDifficulty(time) {
+
+    // New fox every few seconds.
+    if (time > nextFoxTime) {
+
+        spawnFox();
+
+        nextFoxTime += Math.max(
+            3.5,
+            8 - time/30
+        );
+
+        // Make existing foxes slightly faster.
+        for (const f of foxes) {
+            f.speed += 5;
+        }
+    }
+}
+
+
+// =========================
+// MAIN LOOP
+// =========================
+
+function update(dt) {
+
+    if (!running) return;
+
+    const time =
+        (performance.now()-startTime)/1000;
+
+    updateChicken(dt);
+
+    for (let i=0;i<foxes.length;i++) {
+        updateFox(foxes[i],dt,i);
+    }
+
+    foxVsFox();
+
+    updateEggs();
+
+    detectJukes();
+
+    updateParticles(dt);
+
+    updateDifficulty(time);
+
+    // Chicken caught
+    for (const f of foxes) {
+
+        if (circleCollision(chicken,f)) {
+
+            gameOver();
+            return;
+        }
+    }
+
+    // Score for survival
+    score += dt * 10;
+
+    document.getElementById("score").textContent =
+        Math.floor(score);
+
+    document.getElementById("eggs").textContent =
+        eggCount;
+
+    document.getElementById("foxCount").textContent =
+        foxes.length;
+
+    document.getElementById("time").textContent =
+        Math.floor(time);
+
+    const dashPercent =
+        clamp(
+            1-chicken.dashCooldown/1.2,
+            0,
+            1
+        );
+
+    document.getElementById("dashFill").style.width =
+        (dashPercent*100)+"%";
+}
+
+function draw() {
+
+    drawBackground();
+
+    drawObstacles();
+
+    drawEggs();
+
+    drawParticles();
+
+    for (const f of foxes) {
+        drawFox(f);
+    }
+
+    drawChicken();
+}
+
+function loop(now) {
+
+    let dt = (now-lastTime)/1000;
+
+    dt = Math.min(dt,.033);
+
+    lastTime = now;
+
+    update(dt);
+    draw();
+
+    requestAnimationFrame(loop);
+}
+
+
+// =========================
+// START
+// =========================
+
+createObstacles();
+
+spawnFox();
+
+for (let i=0;i<3;i++) {
+    spawnEgg();
+}
+
+requestAnimationFrame(loop);
+
+</script>
+
+</body>
+</html>
